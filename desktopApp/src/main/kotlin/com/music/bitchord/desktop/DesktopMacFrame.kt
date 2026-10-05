@@ -250,6 +250,30 @@ internal object DesktopMacFrame {
         send.invoke(arrayOf(layer, selSetCornerRadius, if (maximized) 0.0 else 10.0))
     }
 
+    /**
+     * Hands window dragging to AppKit via -[NSWindow performWindowDragWithEvent:],
+     * providing native macOS ProMotion dragging, Spaces switching, and Mission Control support.
+     */
+    fun startDrag(): Boolean {
+        if (!DesktopPlatform.isMac) return false
+        val o = objc ?: return false
+        val send = msgSend ?: return false
+        val nsWindow = windowPtr ?: return false
+
+        return runCatching {
+            val nsAppClass = o.objc_getClass("NSApplication") ?: return false
+            val selSharedApp = o.sel_registerName("sharedApplication")
+            val app = send.invokePointer(arrayOf(nsAppClass, selSharedApp)) ?: return false
+            val selCurrentEvent = o.sel_registerName("currentEvent")
+            val event = send.invokePointer(arrayOf(app, selCurrentEvent))
+            if (event == null || event == Pointer.NULL) return false
+
+            val selPerformDrag = o.sel_registerName("performWindowDragWithEvent:")
+            send.invoke(arrayOf(nsWindow, selPerformDrag, event))
+            true
+        }.getOrDefault(false)
+    }
+
     private fun applyDarkAppearance(nsWindow: Pointer, effectView: Pointer?) {
         val o = objc ?: return
         val send = msgSend ?: return

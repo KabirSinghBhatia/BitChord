@@ -79,4 +79,15 @@ class DesktopMacFrameTest {
         msgSend.invoke(arrayOf(layer, selSetMasksToBounds, true))
         println("Successfully tested NSVisualEffectView with Dark Aqua and corner radius 10.0")
     }
+
+    @Test
+    fun testPerformWindowDragSelectors() {
+        if (!DesktopPlatform.isMac) return
+        val objc = NativeLibrary.getInstance("objc")
+        val registerName = objc.getFunction("sel_registerName")
+        val selPerformDrag = registerName.invokePointer(arrayOf("performWindowDragWithEvent:"))
+        val selCurrentEvent = registerName.invokePointer(arrayOf("currentEvent"))
+        assertTrue(selPerformDrag != null && selPerformDrag != Pointer.NULL, "performWindowDragWithEvent: must be a valid selector")
+        assertTrue(selCurrentEvent != null && selCurrentEvent != Pointer.NULL, "currentEvent must be a valid selector")
+    }
 }
