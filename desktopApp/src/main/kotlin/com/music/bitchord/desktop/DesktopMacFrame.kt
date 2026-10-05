@@ -91,6 +91,16 @@ internal object DesktopMacFrame {
         return send.invokePointer(arrayOf(alloc, selInit))
     }
 
+    private fun isMainThread(): Boolean {
+        val o = objc ?: return false
+        val send = msgSend ?: return false
+        val nsThreadClass = o.objc_getClass("NSThread") ?: return false
+        val selIsMainThread = o.sel_registerName("isMainThread")
+        return runCatching {
+            send.invoke(Boolean::class.java, arrayOf(nsThreadClass, selIsMainThread)) as? Boolean
+        }.getOrDefault(false) ?: false
+    }
+
     private fun dispatchToMainThread() {
         val tu = threadUtilities ?: return
         val helper = helperInstance ?: return
@@ -224,8 +234,11 @@ internal object DesktopMacFrame {
         windowPtr = nsWindow
         installed.set(true)
 
-        applyDarkAppearance(nsWindow, null)
-        dispatchToMainThread()
+        if (isMainThread()) {
+            runCatching { applyNativeBackdropOnMainThread(currentBackdropKind) }
+        } else {
+            dispatchToMainThread()
+        }
         DesktopTrackLog.log("DesktopMacFrame: installed successfully on NSWindow $nsWindow")
         return true
     }
@@ -234,7 +247,15 @@ internal object DesktopMacFrame {
     fun setBackdrop(nativeKind: Int): Boolean {
         if (!DesktopPlatform.isMac) return false
         currentBackdropKind = nativeKind
-        dispatchToMainThread()
+        if (isMainThread()) {
+            runCatching {
+                applyNativeBackdropOnMainThread(nativeKind)
+            }.onFailure {
+                DesktopTrackLog.log("DesktopMacFrame error: ${it.message}")
+            }
+        } else {
+            dispatchToMainThread()
+        }
         return true
     }
 
@@ -274,6 +295,8 @@ internal object DesktopMacFrame {
         }.getOrDefault(false)
     }
 
+    private var windowConfigured = false
+
     private fun applyDarkAppearance(nsWindow: Pointer, effectView: Pointer?) {
         val o = objc ?: return
         val send = msgSend ?: return
@@ -310,114 +333,111 @@ internal object DesktopMacFrame {
         }
     }
 
-    private fun applyNativeBackdropOnMainThread(nativeKind: Int) {
-        val o = objc ?: return
-        val send = msgSend ?: return
-        val nsWindow = windowPtr ?: return
+    private fun ensureWindowAndEffectView(o: LibObjC, send: com.sun.jna.Function, nsWindow: Pointer): Pointer? {
+        if (!windowConfigured) {
+            val selSetOpaque = o.sel_registerName("setOpaque:")
+            send.invoke(arrayOf(nsWindow, selSetOpaque, false))
 
-        // 1. Transparent window & drop shadow
-        val selSetOpaque = o.sel_registerName("setOpaque:")
-        send.invoke(arrayOf(nsWindow, selSetOpaque, false))
-
-        val nsColorClass = o.objc_getClass("NSColor")
-        if (nsColorClass != null) {
-            val selClearColor = o.sel_registerName("clearColor")
-            val clearColor = send.invokePointer(arrayOf(nsColorClass, selClearColor))
-            if (clearColor != null) {
-                val selSetBackgroundColor = o.sel_registerName("setBackgroundColor:")
-                send.invoke(arrayOf(nsWindow, selSetBackgroundColor, clearColor))
+            val nsColorClass = o.objc_getClass("NSColor")
+            if (nsColorClass != null) {
+                val selClearColor = o.sel_registerName("clearColor")
+                val clearColor = send.invokePointer(arrayOf(nsColorClass, selClearColor))
+                if (clearColor != null) {
+                    val selSetBackgroundColor = o.sel_registerName("setBackgroundColor:")
+                    send.invoke(arrayOf(nsWindow, selSetBackgroundColor, clearColor))
+                }
             }
+
+            val selSetHasShadow = o.sel_registerName("setHasShadow:")
+            send.invoke(arrayOf(nsWindow, selSetHasShadow, true))
+
+            val selInvalidateShadow = o.sel_registerName("invalidateShadow")
+            send.invoke(arrayOf(nsWindow, selInvalidateShadow))
+
+            windowConfigured = true
         }
 
-        val selSetHasShadow = o.sel_registerName("setHasShadow:")
-        send.invoke(arrayOf(nsWindow, selSetHasShadow, true))
+        effectViewPtr?.let { return it }
 
-        val selInvalidateShadow = o.sel_registerName("invalidateShadow")
-        send.invoke(arrayOf(nsWindow, selInvalidateShadow))
-
-        applyDarkAppearance(nsWindow, effectViewPtr)
-
-        // 2. NSVisualEffectView setup
         val selContentView = o.sel_registerName("contentView")
         val contentView = send.invokePointer(arrayOf(nsWindow, selContentView)) ?: run {
             DesktopTrackLog.log("DesktopMacFrame: contentView is null")
-            return
+            return null
         }
 
         val selSuperview = o.sel_registerName("superview")
         val superview = send.invokePointer(arrayOf(contentView, selSuperview)) ?: contentView
 
-        val existing = effectViewPtr
+        val effectClass = o.objc_getClass("NSVisualEffectView") ?: run {
+            DesktopTrackLog.log("DesktopMacFrame: NSVisualEffectView class not found")
+            return null
+        }
+        val selAlloc = o.sel_registerName("alloc")
+        val selInit = o.sel_registerName("init")
+        val alloc = send.invokePointer(arrayOf(effectClass, selAlloc)) ?: return null
+        val view = send.invokePointer(arrayOf(alloc, selInit)) ?: return null
+
+        val selSetTranslates = o.sel_registerName("setTranslatesAutoresizingMaskIntoConstraints:")
+        send.invoke(arrayOf(view, selSetTranslates, false))
+
+        // NSVisualEffectBlendingModeBehindWindow = 0
+        val selSetBlending = o.sel_registerName("setBlendingMode:")
+        send.invoke(arrayOf(view, selSetBlending, 0L))
+
+        // NSVisualEffectStateActive = 1
+        val selSetState = o.sel_registerName("setState:")
+        send.invoke(arrayOf(view, selSetState, 1L))
+
+        // Mask corners to match Compose's 10.dp rounded corners
+        val selSetWantsLayer = o.sel_registerName("setWantsLayer:")
+        send.invoke(arrayOf(view, selSetWantsLayer, true))
+        val selLayer = o.sel_registerName("layer")
+        val layer = send.invokePointer(arrayOf(view, selLayer))
+        if (layer != null && layer != Pointer.NULL) {
+            val selSetCornerRadius = o.sel_registerName("setCornerRadius:")
+            val selSetMasksToBounds = o.sel_registerName("setMasksToBounds:")
+            val radius = if (DesktopWindowMode.maximized.value) 0.0 else 10.0
+            send.invoke(arrayOf(layer, selSetCornerRadius, radius))
+            send.invoke(arrayOf(layer, selSetMasksToBounds, true))
+        }
+
+        // Add behind AWTView (in superview if available, else below contentView)
+        val selAddSubview = o.sel_registerName("addSubview:positioned:relativeTo:")
+        if (superview != contentView) {
+            send.invoke(arrayOf(superview, selAddSubview, view, -1L, contentView))
+        } else {
+            send.invoke(arrayOf(contentView, selAddSubview, view, -1L, null))
+        }
+
+        pinConstraints(view, contentView)
+
+        effectViewPtr = view
+        applyDarkAppearance(nsWindow, view)
+        return view
+    }
+
+    private fun applyNativeBackdropOnMainThread(nativeKind: Int) {
+        val o = objc ?: return
+        val send = msgSend ?: return
+        val nsWindow = windowPtr ?: return
+
+        val effectView = ensureWindowAndEffectView(o, send, nsWindow) ?: return
+
+        val selSetHidden = o.sel_registerName("setHidden:")
+        val selSetMaterial = o.sel_registerName("setMaterial:")
 
         if (nativeKind == 0) { // OFF
-            if (existing != null) {
-                val selRemove = o.sel_registerName("removeFromSuperview")
-                send.invoke(arrayOf(existing, selRemove))
-                effectViewPtr = null
-            }
-            DesktopTrackLog.log("DesktopMacFrame: removed NSVisualEffectView")
-            return
+            send.invoke(arrayOf(effectView, selSetHidden, true))
+            DesktopTrackLog.log("DesktopMacFrame: backdrop set to OFF (hidden=true)")
+        } else {
+            // macOS Materials:
+            // MICA (2) -> NSVisualEffectMaterialSidebar (7)
+            // ACRYLIC (3) -> NSVisualEffectMaterialHUDWindow (13)
+            val material = if (nativeKind == 2) 7L else 13L
+            send.invoke(arrayOf(effectView, selSetMaterial, material))
+            send.invoke(arrayOf(effectView, selSetHidden, false))
+            DesktopTrackLog.log("DesktopMacFrame: backdrop applied material $material (nativeKind $nativeKind)")
         }
-
-        // macOS Materials:
-        // MICA (2) -> NSVisualEffectMaterialSidebar (7)
-        // ACRYLIC (3) -> NSVisualEffectMaterialHUDWindow (13)
-        val material = if (nativeKind == 2) 7L else 13L
-
-        val effectView = existing ?: run {
-            val effectClass = o.objc_getClass("NSVisualEffectView") ?: run {
-                DesktopTrackLog.log("DesktopMacFrame: NSVisualEffectView class not found")
-                return
-            }
-            val selAlloc = o.sel_registerName("alloc")
-            val selInit = o.sel_registerName("init")
-            val alloc = send.invokePointer(arrayOf(effectClass, selAlloc)) ?: return
-            val view = send.invokePointer(arrayOf(alloc, selInit)) ?: return
-
-            val selSetTranslates = o.sel_registerName("setTranslatesAutoresizingMaskIntoConstraints:")
-            send.invoke(arrayOf(view, selSetTranslates, false))
-
-            // NSVisualEffectBlendingModeBehindWindow = 0
-            val selSetBlending = o.sel_registerName("setBlendingMode:")
-            send.invoke(arrayOf(view, selSetBlending, 0L))
-
-            // NSVisualEffectStateActive = 1
-            val selSetState = o.sel_registerName("setState:")
-            send.invoke(arrayOf(view, selSetState, 1L))
-
-            // Mask corners to match Compose's 10.dp rounded corners
-            val selSetWantsLayer = o.sel_registerName("setWantsLayer:")
-            send.invoke(arrayOf(view, selSetWantsLayer, true))
-            val selLayer = o.sel_registerName("layer")
-            val layer = send.invokePointer(arrayOf(view, selLayer))
-            if (layer != null && layer != Pointer.NULL) {
-                val selSetCornerRadius = o.sel_registerName("setCornerRadius:")
-                val selSetMasksToBounds = o.sel_registerName("setMasksToBounds:")
-                val radius = if (DesktopWindowMode.maximized.value) 0.0 else 10.0
-                send.invoke(arrayOf(layer, selSetCornerRadius, radius))
-                send.invoke(arrayOf(layer, selSetMasksToBounds, true))
-            }
-
-            // Add behind AWTView (in superview if available, else below contentView)
-            val selAddSubview = o.sel_registerName("addSubview:positioned:relativeTo:")
-            if (superview != contentView) {
-                send.invoke(arrayOf(superview, selAddSubview, view, -1L, contentView))
-            } else {
-                send.invoke(arrayOf(contentView, selAddSubview, view, -1L, null))
-            }
-
-            pinConstraints(view, contentView)
-
-            effectViewPtr = view
-            applyDarkAppearance(nsWindow, view)
-            view
-        }
-
-        val selSetMaterial = o.sel_registerName("setMaterial:")
-        send.invoke(arrayOf(effectView, selSetMaterial, material))
-        applyDarkAppearance(nsWindow, effectView)
-
-        DesktopTrackLog.log("DesktopMacFrame: applied material $material behind AWTView (nativeKind $nativeKind)")
     }
 
     private fun pinConstraints(view: Pointer, target: Pointer) {

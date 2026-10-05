@@ -145,6 +145,10 @@ dependencies {
     testImplementation(kotlin("test"))
 }
 
+tasks.withType<Test> {
+    systemProperty("java.awt.headless", "true")
+}
+
 kotlin {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_21)

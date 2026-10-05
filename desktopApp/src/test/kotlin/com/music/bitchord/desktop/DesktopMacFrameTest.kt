@@ -25,15 +25,6 @@ class DesktopMacFrameTest {
 
         println("Dark Aqua Appearance: $darkAppearance")
         assertTrue(darkAppearance != null && darkAppearance != Pointer.NULL, "NSAppearanceNameDarkAqua must exist")
-
-        val nsAppClass = getClass.invokePointer(arrayOf("NSApplication"))
-        val selSharedApp = registerName.invokePointer(arrayOf("sharedApplication"))
-        val app = msgSend.invokePointer(arrayOf(nsAppClass, selSharedApp))
-        val selSetAppearance = registerName.invokePointer(arrayOf("setAppearance:"))
-        if (app != null && app != Pointer.NULL) {
-            msgSend.invoke(arrayOf(app, selSetAppearance, darkAppearance))
-            println("Successfully set appearance on NSApplication")
-        }
     }
 
     @Test
@@ -89,5 +80,14 @@ class DesktopMacFrameTest {
         val selCurrentEvent = registerName.invokePointer(arrayOf("currentEvent"))
         assertTrue(selPerformDrag != null && selPerformDrag != Pointer.NULL, "performWindowDragWithEvent: must be a valid selector")
         assertTrue(selCurrentEvent != null && selCurrentEvent != Pointer.NULL, "currentEvent must be a valid selector")
+    }
+
+    @Test
+    fun testSetBackdropMaterials() {
+        if (!DesktopPlatform.isMac) return
+        assertTrue(DesktopMacFrame.setBackdrop(2), "Setting Mica material must succeed")
+        assertTrue(DesktopMacFrame.setBackdrop(3), "Setting Acrylic material must succeed")
+        assertTrue(DesktopMacFrame.setBackdrop(0), "Setting Off material must succeed")
+        assertTrue(DesktopMacFrame.setBackdrop(2), "Setting back to Mica must succeed seamlessly")
     }
 }
