@@ -56,6 +56,16 @@ internal object DesktopMacFrame {
         }
     }
 
+    private val activateCallbackRef = object : ActionCallback {
+        override fun invoke(self: Pointer, _cmd: Pointer, arg: Pointer) {
+            runCatching {
+                activateAppOnMainThread()
+            }.onFailure {
+                DesktopTrackLog.log("DesktopMacFrame activate main thread error: ${it.message}")
+            }
+        }
+    }
+
     private val helperInstance: Pointer? by lazy {
         initHelper()
     }
@@ -66,6 +76,10 @@ internal object DesktopMacFrame {
 
     private val selApplyBackdrop: Pointer? by lazy {
         objc?.sel_registerName("applyBackdrop:")
+    }
+
+    private val selActivateApp: Pointer? by lazy {
+        objc?.sel_registerName("activateApp:")
     }
 
     private val threadUtilities: Pointer? by lazy {
@@ -83,6 +97,8 @@ internal object DesktopMacFrame {
             cls = o.objc_allocateClassPair(nsObjectClass, clsName, 0L) ?: return null
             val sel = o.sel_registerName("applyBackdrop:")
             o.class_addMethod(cls, sel, callbackRef, "v@:@")
+            val selActivate = o.sel_registerName("activateApp:")
+            o.class_addMethod(cls, selActivate, activateCallbackRef, "v@:@")
             o.objc_registerClassPair(cls)
         }
         val selAlloc = o.sel_registerName("alloc")
@@ -107,6 +123,30 @@ internal object DesktopMacFrame {
         val selPerform = selPerformOnMain ?: return
         val selAction = selApplyBackdrop ?: return
         val send = msgSend ?: return
+        send.invoke(arrayOf(tu, selPerform, selAction, helper, helper, false))
+    }
+
+    private fun dispatchActivateToMainThread() {
+        val tu = threadUtilities ?: run {
+            activateAppOnMainThread()
+            return
+        }
+        val helper = helperInstance ?: run {
+            activateAppOnMainThread()
+            return
+        }
+        val selPerform = selPerformOnMain ?: run {
+            activateAppOnMainThread()
+            return
+        }
+        val selAction = selActivateApp ?: run {
+            activateAppOnMainThread()
+            return
+        }
+        val send = msgSend ?: run {
+            activateAppOnMainThread()
+            return
+        }
         send.invoke(arrayOf(tu, selPerform, selAction, helper, helper, false))
     }
 
@@ -293,6 +333,55 @@ internal object DesktopMacFrame {
             send.invoke(arrayOf(nsWindow, selPerformDrag, event))
             true
         }.getOrDefault(false)
+    }
+
+    /**
+     * Activates the macOS application process and restores/orders the window to the front.
+     * Called when the app is reopened from the macOS Dock, Spotlight, or system tray.
+     */
+    fun activateApp() {
+        if (!DesktopPlatform.isMac) return
+        if (isMainThread()) {
+            runCatching { activateAppOnMainThread() }
+        } else {
+            dispatchActivateToMainThread()
+        }
+    }
+
+    private fun activateAppOnMainThread() {
+        val o = objc ?: return
+        val send = msgSend ?: return
+        val nsWindow = windowPtr ?: findAppKitWindow() ?: return
+
+        runCatching {
+            val nsAppClass = o.objc_getClass("NSApplication") ?: return
+            val selSharedApp = o.sel_registerName("sharedApplication")
+            val app = send.invokePointer(arrayOf(nsAppClass, selSharedApp)) ?: return
+
+            // 1. Activate application (bring app process to foreground over other applications)
+            val selActivate = o.sel_registerName("activateIgnoringOtherApps:")
+            send.invoke(arrayOf(app, selActivate, true))
+
+            // 2. Unminimize window if miniaturized
+            val selIsMiniaturized = o.sel_registerName("isMiniaturized")
+            val isMini = (send.invoke(Boolean::class.java, arrayOf(nsWindow, selIsMiniaturized)) as? Boolean) ?: false
+            if (isMini) {
+                val selDeminiaturize = o.sel_registerName("deminiaturize:")
+                send.invoke(arrayOf(nsWindow, selDeminiaturize, Pointer.NULL))
+            }
+
+            // 3. Make key and order front
+            val selMakeKeyAndOrderFront = o.sel_registerName("makeKeyAndOrderFront:")
+            send.invoke(arrayOf(nsWindow, selMakeKeyAndOrderFront, Pointer.NULL))
+
+            // 4. Invalidate window shadow so it redraws cleanly
+            val selInvalidateShadow = o.sel_registerName("invalidateShadow")
+            send.invoke(arrayOf(nsWindow, selInvalidateShadow))
+
+            DesktopTrackLog.log("DesktopMacFrame: activateApp executed successfully on $nsWindow")
+        }.onFailure {
+            DesktopTrackLog.log("DesktopMacFrame.activateApp failed: ${it.message}")
+        }
     }
 
     private var windowConfigured = false

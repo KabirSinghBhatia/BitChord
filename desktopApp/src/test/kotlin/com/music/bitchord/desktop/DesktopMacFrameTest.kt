@@ -90,4 +90,43 @@ class DesktopMacFrameTest {
         assertTrue(DesktopMacFrame.setBackdrop(0), "Setting Off material must succeed")
         assertTrue(DesktopMacFrame.setBackdrop(2), "Setting back to Mica must succeed seamlessly")
     }
+
+    @Test
+    fun testActivateAppSelectors() {
+        if (!DesktopPlatform.isMac) return
+        val objc = NativeLibrary.getInstance("objc")
+        val registerName = objc.getFunction("sel_registerName")
+        val getClass = objc.getFunction("objc_getClass")
+        val msgSend = objc.getFunction("objc_msgSend")
+
+        val selActivate = registerName.invokePointer(arrayOf("activateIgnoringOtherApps:"))
+        val selIsMiniaturized = registerName.invokePointer(arrayOf("isMiniaturized"))
+        val selDeminiaturize = registerName.invokePointer(arrayOf("deminiaturize:"))
+        val selMakeKeyAndOrderFront = registerName.invokePointer(arrayOf("makeKeyAndOrderFront:"))
+        val selInvalidateShadow = registerName.invokePointer(arrayOf("invalidateShadow"))
+
+        assertTrue(selActivate != null && selActivate != Pointer.NULL, "activateIgnoringOtherApps: must be a valid selector")
+        assertTrue(selIsMiniaturized != null && selIsMiniaturized != Pointer.NULL, "isMiniaturized must be a valid selector")
+        assertTrue(selDeminiaturize != null && selDeminiaturize != Pointer.NULL, "deminiaturize: must be a valid selector")
+        assertTrue(selMakeKeyAndOrderFront != null && selMakeKeyAndOrderFront != Pointer.NULL, "makeKeyAndOrderFront: must be a valid selector")
+        assertTrue(selInvalidateShadow != null && selInvalidateShadow != Pointer.NULL, "invalidateShadow must be a valid selector")
+
+        val nsAppClass = getClass.invokePointer(arrayOf("NSApplication"))
+        val selSharedApp = registerName.invokePointer(arrayOf("sharedApplication"))
+        val app = msgSend.invokePointer(arrayOf(nsAppClass, selSharedApp))
+        assertTrue(app != null && app != Pointer.NULL, "NSApplication sharedApplication must return valid pointer")
+    }
+
+    @Test
+    fun testDesktopWindowVisibilityLifecycle() {
+        DesktopWindowVisibility.install()
+        DesktopWindowVisibility.keepRunningWhenClosed = true
+
+        val closeResult = DesktopWindowVisibility.onCloseRequest()
+        assertTrue(!closeResult, "onCloseRequest must return false when keepRunningWhenClosed is true")
+        assertTrue(!DesktopWindowVisibility.visible.value, "Window must be hidden when closed to tray")
+
+        DesktopWindowVisibility.show()
+        assertTrue(DesktopWindowVisibility.visible.value, "show() must make the window visible again")
+    }
 }
