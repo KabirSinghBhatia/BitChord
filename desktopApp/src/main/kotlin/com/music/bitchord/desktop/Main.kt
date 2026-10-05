@@ -70,6 +70,12 @@ private fun desktopMain() = application {
     LaunchedEffect(state) {
         snapshotFlow { state.placement }.collect(DesktopWindowMode::adopt)
     }
+    val maximized by DesktopWindowMode.maximized.collectAsState()
+    LaunchedEffect(maximized) {
+        if (DesktopPlatform.isMac) {
+            DesktopMacFrame.updateCornerRadius(maximized)
+        }
+    }
     Window(
         onCloseRequest = { if (DesktopWindowVisibility.onCloseRequest()) exitApplication() },
         visible = visible,
@@ -95,6 +101,11 @@ private fun desktopMain() = application {
             if (!DesktopWindowBackdrop.available) {
                 composeWindow.background = java.awt.Color.BLACK
                 composeWindow.contentPane.background = java.awt.Color.BLACK
+            } else {
+                composeWindow.background = java.awt.Color(0, 0, 0, 0)
+                composeWindow.contentPane.background = java.awt.Color(0, 0, 0, 0)
+                (composeWindow.contentPane as? javax.swing.JComponent)?.isOpaque = false
+                composeWindow.rootPane.isOpaque = false
             }
             // AWT measures this in device pixels while Compose's window state is in dp. Keeping
             // the scale in the conversion makes the usable minimum consistent on every display.
@@ -113,6 +124,8 @@ private fun desktopMain() = application {
                 (openingSize.height.value * transform.scaleY).roundToInt(),
             )
             if (DesktopPlatform.isWindows && DesktopWindowsFrame.install("BitChord")) {
+                DesktopWindowBackdrop.apply()
+            } else if (DesktopPlatform.isMac && DesktopMacFrame.install(composeWindow)) {
                 DesktopWindowBackdrop.apply()
             }
         }

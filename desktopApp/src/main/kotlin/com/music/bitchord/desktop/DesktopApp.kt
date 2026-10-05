@@ -4618,8 +4618,15 @@ private fun DesktopFrame(
     val appBackground by DesktopWindowBackdrop.appBackground.collectAsState()
     val glass = material != DesktopBackdrop.OFF
     val materialBehindApp = glass && appBackground
+    val maximized by DesktopWindowMode.maximized.collectAsState()
+    val roundCorners = DesktopPlatform.isMac && !maximized
     CompositionLocalProvider(LocalDesktopHaze provides haze) {
-        Box(modifier.fillMaxSize().then(if (glass) Modifier else Modifier.background(containerColor))) {
+        Box(
+            modifier
+                .fillMaxSize()
+                .then(if (roundCorners) Modifier.clip(RoundedCornerShape(10.dp)) else Modifier)
+                .then(if (glass) Modifier else Modifier.background(containerColor)),
+        ) {
             // Both sources of the same state: the chrome blurs the backdrop behind it, and the
             // floating bottom bar blurs the page scrolling under it.
             if (!glass) Box(Modifier.fillMaxSize().hazeSource(haze)) { backdrop(false) }
@@ -5731,9 +5738,11 @@ private fun DesktopSettingsScreen(
                                 Text(
                                     when {
                                         backdropChoice != DesktopBackdrop.OFF && backdropActive == DesktopBackdrop.OFF ->
-                                            "Needs Windows 11 version 22H2 or later"
+                                            if (DesktopPlatform.isMac) "Native vibrancy could not be attached"
+                                            else "Needs Windows 11 version 22H2 or later"
                                         backdropChoice == DesktopBackdrop.MICA ->
-                                            "A soft tint taken from your wallpaper"
+                                            if (DesktopPlatform.isMac) "A subtle blur of your desktop wallpaper"
+                                            else "A soft tint taken from your wallpaper"
                                         backdropChoice == DesktopBackdrop.ACRYLIC ->
                                             "A frosted blur of whatever is behind the window"
                                         else -> "Solid, as the rest of the app"
